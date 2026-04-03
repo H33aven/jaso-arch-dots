@@ -23,6 +23,7 @@ if status is-interactive
     starship init fish | source
 
     # Aliases
+    alias neofetch='neofetch --ascii_distro gentoo'
     alias clear "printf '\033[2J\033[3J\033[1;1H'"
     alias celar "printf '\033[2J\033[3J\033[1;1H'"
     alias claer "printf '\033[2J\033[3J\033[1;1H'"
@@ -30,3 +31,5 @@ if status is-interactive
     alias pamcan pacman
     alias q 'qs -c ii'
 end
+
+neofetch
