@@ -81,10 +81,10 @@ Scope {
             enabled: GlobalStates.overviewOpen
 
             Behavior on scale {
-                NumberAnimation { duration: 180; easing.type: Easing.OutBack }
+                NumberAnimation { duration: 180; easing.type: Easing.OutQuad }
             }
             Behavior on opacity {
-                NumberAnimation { duration: 180; easing.type: Easing.OutBack }
+                NumberAnimation { duration: 180; easing.type: Easing.OutQuad }
             }
             Keys.onPressed: event => {
                 if (event.key === Qt.Key_Escape) {
