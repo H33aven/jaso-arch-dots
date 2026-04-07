@@ -1,0 +1,18 @@
+[Desktop Entry]
+Categories=AudioVideo;
+Comment[en_US]=
+Comment=
+Exec=/home/jaso/Applications/Kute-1.1.4.AppImage --no-sandbox %U
+GenericName[en_US]=
+GenericName=
+Icon=/home/jaso/kute/FrvEENAaEAEWWFt.jpg
+MimeType=
+Name[en_US]=Kute
+Name=Kute
+Path=
+StartupNotify=true
+Terminal=false
+TerminalOptions=
+Type=Application
+X-KDE-SubstituteUID=false
+X-KDE-Username=
