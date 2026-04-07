@@ -1,0 +1,1137 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtMultimedia
+import Quickshell
+import Quickshell.Io
+import qs.services
+import qs.modules.common
+import qs.modules.common.widgets
+import QtQuick.LocalStorage 2.0
+import Qt5Compat.GraphicalEffects
+
+Rectangle {
+    id: root
+    color: "transparent"
+    property int currentIndex: -1
+    property string currentTrackPath: ""
+    property string libraryPath: ""
+    property ListModel tracks: ListModel {}
+    property ListModel filteredTracks: ListModel {}
+    property int repeatMode: 0
+    property string searchText: ""
+    property bool isLoading: false
+    property string cacheDir: ""
+    property bool homeReady: false
+    property bool editMode: false
+    property int savedFirstVisibleIndex: -1
+    property bool metadataEditing: false
+    property string editName: ""
+    property string editArtist: ""
+    property string editAlbum: ""
+    property string currentTrackName: "No track"
+    property string currentTrackArtistAlbum: "Select library"
+    property bool expectedPlaying: false
+    property Timer debounceSaveTimer: Timer { interval: 300; onTriggered: saveAllSettings() }
+    property Timer filterUpdateTimer: Timer { interval: 150; onTriggered: applyFilter() }
+    property var pendingTasks: []
+    property bool processingTask: false
+    property int pendingMetaCount: 0
+    property bool showLyrics: false
+    property bool lyricsEditing: false
+    property string lyricsContent: "there's no lyrics yet :3"
+    property string lyricsEditBuffer: ""
+
+    function enqueueTask(type, index) {
+        pendingTasks.push({ type: type, index: index });
+        if (!processingTask) processNextTask();
+    }
+    function processNextTask() {
+        if (pendingTasks.length === 0) {
+            processingTask = false;
+            return;
+        }
+        processingTask = true;
+        var task = pendingTasks.shift();
+        if (task.type === "meta") {
+            var filePath = tracks.get(task.index).path.toString().replace("file://", "");
+            metadataProc.command = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", filePath];
+            metadataProc.tag = { index: task.index };
+            metadataProc.running = true;
+        } else if (task.type === "cover") {
+            var track = tracks.get(task.index);
+            var filePath = track.path.toString().replace("file://", "");
+            var cacheFilePath = cacheDir + "/" + Qt.md5(filePath) + ".jpg";
+            checkFileProc.command = ["test", "-f", cacheFilePath];
+            checkFileProc.tag = { trackIndex: task.index, path: track.path, cachePath: cacheFilePath };
+            checkFileProc.running = true;
+        }
+    }
+    function setCurrentTrack(path, index) {
+        currentTrackPath = path;
+        currentIndex = index;
+        mediaPlayer.source = path;
+        mediaPlayer.play();
+        expectedPlaying = true;
+    }
+    Shortcut { sequence: "Ctrl+S"; onActivated: { if (metadataEditing) saveMetadata() } }
+    Shortcut { sequence: "Ctrl+X"; onActivated: { if (!metadataEditing && currentTrackPath) startMetadataEdit() } }
+    Shortcut { sequence: "Space"; onActivated: { if (!metadataEditing) mediaPlayer.playbackState === MediaPlayer.PlayingState ? mediaPlayer.pause() : mediaPlayer.play() } }
+    Shortcut { sequence: "Down"; onActivated: { if (!metadataEditing && filteredTracks.count > 0) { var nextIndex = (currentIndex + 1) % filteredTracks.count; setCurrentTrack(filteredTracks.get(nextIndex).path, nextIndex); } } }
+    Shortcut { sequence: "Up"; onActivated: { if (!metadataEditing && filteredTracks.count > 0) { var prevIndex = (currentIndex - 1 + filteredTracks.count) % filteredTracks.count; setCurrentTrack(filteredTracks.get(prevIndex).path, prevIndex); } } }
+    Shortcut { sequence: "Escape"; onActivated: { metadataEditing = false } }
+
+    onCurrentTrackPathChanged: { updateCurrentTrackInfo(); metadataEditing = false; loadLyrics(currentTrackPath); }
+
+    function updateCurrentTrackInfo() {
+        if (!currentTrackPath) { currentTrackName = "No track"; currentTrackArtistAlbum = "Select library"; return; }
+        for (var i = 0; i < tracks.count; i++) {
+            var t = tracks.get(i);
+            if (t.path === currentTrackPath) {
+                currentTrackName = t.name;
+                currentTrackArtistAlbum = t.artist + (t.album ? " • " + t.album : "");
+                return;
+            }
+        }
+        currentTrackName = "Unknown";
+        currentTrackArtistAlbum = "";
+    }
+    function startMetadataEdit() {
+        if (!currentTrackPath) return;
+        for (var i = 0; i < tracks.count; i++) {
+            var t = tracks.get(i);
+            if (t.path === currentTrackPath) {
+                editName = t.name;
+                editArtist = t.artist;
+                editAlbum = t.album || "";
+                metadataEditing = true;
+                return;
+            }
+        }
+    }
+    function saveMetadata() {
+        if (!currentTrackPath || !metadataEditing) return;
+        for (var i = 0; i < tracks.count; i++) {
+            if (tracks.get(i).path === currentTrackPath) {
+                var updatedTrack = {
+                    name: editName,
+                    artist: editArtist,
+                    album: editAlbum,
+                    path: tracks.get(i).path,
+                    coverColor: tracks.get(i).coverColor,
+                    coverPath: tracks.get(i).coverPath,
+                    coverVersion: tracks.get(i).coverVersion
+                };
+                tracks.set(i, updatedTrack);
+                updateFilteredItem(currentTrackPath);
+                updateCurrentTrackInfo();
+                break;
+            }
+        }
+        var rawPath = currentTrackPath.toString().replace("file://", "");
+        saveMetadataToFile(rawPath, editName, editArtist, editAlbum);
+        metadataEditing = false;
+    }
+    function saveMetadataToFile(filePath, title, artist, album) {
+        if (!homeReady) return;
+        var tempPath = filePath + ".tmp.mp3";
+        var args = [ "-i", filePath, "-c", "copy", "-metadata", "title=" + title, "-metadata", "artist=" + artist, "-metadata", "album=" + album, "-y", tempPath ];
+        ffmpegMetaProc.command = ["ffmpeg"].concat(args);
+        ffmpegMetaProc.tag = { originalPath: filePath, tempPath: tempPath };
+        ffmpegMetaProc.running = true;
+    }
+    function changeCover() { if (currentTrackPath) coverPicker.running = true; }
+    function applyCover(filePath) {
+        var rawPath = currentTrackPath.toString().replace("file://", "");
+        var tempPath = rawPath + ".tmp.mp3";
+        var args = [ "-i", rawPath, "-i", filePath, "-c", "copy", "-map", "0:a", "-map", "1", "-metadata:s:v", "title=Cover", "-metadata:s:v", "comment=Cover (front)", "-y", tempPath ];
+        ffmpegCoverProc.command = ["ffmpeg"].concat(args);
+        ffmpegCoverProc.tag = { originalPath: rawPath, tempPath: tempPath, coverPath: filePath };
+        ffmpegCoverProc.running = true;
+    }
+
+    Process {
+        id: ffmpegMetaProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode === 0) {
+                Qt.callLater(() => {
+                    moveProc.command = ["sh", "-c", "mv '" + tag.tempPath + "' '" + tag.originalPath + "'"];
+                    moveProc.running = true;
+                });
+            } else {
+                rmTempProc.command = ["rm", "-f", tag.tempPath];
+                rmTempProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: ffmpegCoverProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode === 0) {
+                Qt.callLater(() => {
+                    moveCoverProc.command = ["sh", "-c", "mv '" + tag.tempPath + "' '" + tag.originalPath + "'"];
+                    moveCoverProc.tag = { coverPath: tag.coverPath };
+                    moveCoverProc.running = true;
+                });
+            } else {
+                rmTempProc.command = ["rm", "-f", tag.tempPath];
+                rmTempProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: moveProc
+        running: false
+        onExited: { if (exitCode !== 0) console.error("Failed to replace file"); }
+    }
+    Process {
+        id: moveCoverProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode === 0) {
+                var cacheKey = currentTrackPath.toString().replace("file://", "");
+                var cacheFilePath = cacheDir + "/" + Qt.md5(cacheKey) + ".jpg";
+                cpCoverProc.command = ["cp", tag.coverPath, cacheFilePath];
+                cpCoverProc.running = true;
+            } else console.error("Failed to replace file with cover");
+        }
+    }
+    Process {
+        id: cpCoverProc
+        running: false
+        onExited: {
+            if (exitCode === 0) {
+                for (var i = 0; i < tracks.count; i++) {
+                    if (tracks.get(i).path === currentTrackPath) {
+                        var updatedTrack = tracks.get(i);
+                        var newCoverPath = "file://" + cacheDir + "/" + Qt.md5(currentTrackPath.toString().replace("file://", "")) + ".jpg";
+                        updatedTrack.coverPath = newCoverPath;
+                        updatedTrack.coverVersion = (updatedTrack.coverVersion || 0) + 1;
+                        tracks.set(i, updatedTrack);
+                        updateFilteredItem(currentTrackPath);
+                        albumArtImage.source = "";
+                        albumArtImage.source = newCoverPath + "?v=" + updatedTrack.coverVersion;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Process { id: rmTempProc; running: false }
+    Process {
+        id: coverPicker
+        command: ["zenity", "--file-selection", "--file-filter=Images (jpg, png) | *.jpg *.jpeg *.png", "--title=Select Cover Image"]
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: { var path = this.text.trim(); if (path) applyCover(path); }
+        }
+    }
+
+    function getDatabase() { return LocalStorage.openDatabaseSync("KutePlayer", "1.0", "KutePlayer settings", 1000000); }
+    function initDatabase() { getDatabase().transaction(tx => tx.executeSql('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)')); }
+    function saveSetting(key, value) { getDatabase().transaction(tx => tx.executeSql('INSERT OR REPLACE INTO settings VALUES(?, ?)', [key, value])); }
+    function loadSetting(key, defaultValue) {
+        var result = defaultValue;
+        getDatabase().transaction(tx => {
+            var rs = tx.executeSql('SELECT value FROM settings WHERE key=?', [key]);
+            if (rs.rows.length > 0) result = rs.rows.item(0).value;
+        });
+        return result;
+    }
+    function loadAllSettings() {
+        repeatMode = parseInt(loadSetting("repeatMode", "0"));
+        var vol = parseFloat(loadSetting("volume", "80"));
+        volumeSlider.value = vol;
+        mediaPlayer.audioOutput.volume = vol / 100;
+        libraryPath = loadSetting("libraryPath", "");
+        getCacheDir();
+    }
+    function saveAllSettings() {
+        if (tracks.count === 0) return;
+        saveSetting("repeatMode", repeatMode.toString());
+        saveSetting("volume", volumeSlider.value.toString());
+        saveSetting("libraryPath", libraryPath);
+    }
+    function rebuildFilteredTracks() {
+        var firstVisibleIdx = trackListView.indexAt(0, trackListView.contentY);
+        savedFirstVisibleIndex = (firstVisibleIdx >= 0) ? firstVisibleIdx : 0;
+        filteredTracks.clear();
+        var lowerSearch = searchText.toLowerCase();
+        for (var i = 0; i < tracks.count; i++) {
+            var track = tracks.get(i);
+            if (searchText === "" ||
+                track.name.toLowerCase().includes(lowerSearch) ||
+                track.artist.toLowerCase().includes(lowerSearch) ||
+                track.album.toLowerCase().includes(lowerSearch)) {
+                filteredTracks.append(track);
+            }
+        }
+        updateCurrentIndexFromPath();
+        if (savedFirstVisibleIndex >= 0 && savedFirstVisibleIndex < filteredTracks.count)
+            trackListView.positionViewAtIndex(savedFirstVisibleIndex, ListView.Beginning);
+    }
+    function updateCurrentIndexFromPath() {
+        if (!currentTrackPath) { currentIndex = -1; return; }
+        for (var i = 0; i < filteredTracks.count; i++)
+            if (filteredTracks.get(i).path === currentTrackPath) { currentIndex = i; return; }
+        currentIndex = -1;
+    }
+    function updateFilteredItem(path) {
+        for (var i = 0; i < filteredTracks.count; i++) {
+            if (filteredTracks.get(i).path === path) {
+                for (var j = 0; j < tracks.count; j++) {
+                    if (tracks.get(j).path === path) {
+                        filteredTracks.set(i, {
+                            name: tracks.get(j).name,
+                            artist: tracks.get(j).artist,
+                            album: tracks.get(j).album,
+                            path: tracks.get(j).path,
+                            coverColor: tracks.get(j).coverColor,
+                            coverPath: tracks.get(j).coverPath,
+                            coverVersion: tracks.get(j).coverVersion
+                        });
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        if (path === currentTrackPath) updateCurrentTrackInfo();
+    }
+    function applyFilter() { rebuildFilteredTracks(); trackListView.forceLayout(); }
+    function getCacheDir() {
+        homeProc.command = ["sh", "-c", "echo $HOME"];
+        homeProc.running = true;
+    }
+    Process {
+        id: homeProc
+        running: false
+        stdout: SplitParser {
+            onRead: data => {
+                var home = data.trim();
+                cacheDir = home + "/.cache/kuteplayer/covers";
+                mkdirProc.command = ["mkdir", "-p", cacheDir];
+                mkdirProc.running = true;
+            }
+        }
+        onExited: {
+            homeReady = true;
+            if (libraryPath) {
+                scanProc.command = ["find", libraryPath, "-type", "f", "-name", "*.mp3"];
+                scanProc.running = true;
+            }
+        }
+    }
+    Process { id: mkdirProc; running: false }
+    function loadCoverForTrackIndex(trackIndex) {
+        if (!homeReady || trackIndex < 0 || trackIndex >= tracks.count) return;
+        var track = tracks.get(trackIndex);
+        if (track.coverPath && track.coverPath !== "") {
+            if (track.path === currentTrackPath)
+                albumArtImage.source = track.coverPath + "?v=" + (track.coverVersion || 0);
+            return;
+        }
+        var filePath = track.path.toString().replace("file://", "");
+        var cacheFilePath = cacheDir + "/" + Qt.md5(filePath) + ".jpg";
+        priorityCheckProc.command = ["test", "-f", cacheFilePath];
+        priorityCheckProc.tag = { trackIndex: trackIndex, path: track.path, cachePath: cacheFilePath };
+        priorityCheckProc.running = true;
+    }
+    Process {
+        id: priorityCheckProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            var trackIdx = tag.trackIndex;
+            var trackPath = tag.path;
+            var cachePath = tag.cachePath;
+            if (exitCode === 0) {
+                var track = tracks.get(trackIdx);
+                track.coverPath = "file://" + cachePath;
+                track.coverVersion = (track.coverVersion || 0) + 1;
+                tracks.set(trackIdx, track);
+                updateFilteredItem(trackPath);
+                if (trackPath === currentTrackPath)
+                    albumArtImage.source = track.coverPath + "?v=" + track.coverVersion;
+            } else {
+                var filePath = tracks.get(trackIdx).path.toString().replace("file://", "");
+                priorityCoverProc.command = [ "ffmpeg", "-i", filePath, "-an", "-c:v", "copy", "-frames:v", "1", "-y", cachePath ];
+                priorityCoverProc.tag = { trackIndex: trackIdx, path: trackPath, cachePath: cachePath };
+                priorityCoverProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: priorityCoverProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            var trackIdx = tag.trackIndex;
+            var trackPath = tag.path;
+            var cachePath = tag.cachePath;
+            if (exitCode === 0) {
+                var track = tracks.get(trackIdx);
+                track.coverPath = "file://" + cachePath;
+                track.coverVersion = (track.coverVersion || 0) + 1;
+                tracks.set(trackIdx, track);
+                updateFilteredItem(trackPath);
+                if (trackPath === currentTrackPath)
+                    albumArtImage.source = track.coverPath + "?v=" + track.coverVersion;
+            } else console.log("No cover for", tracks.get(trackIdx).name);
+        }
+    }
+    MediaPlayer {
+        id: mediaPlayer
+        audioOutput: AudioOutput {}
+        onPositionChanged: if (mediaPlayer.seekable) progressSlider.value = position / duration * 100 || 0
+        onDurationChanged: durationLabel.text = formatTime(duration)
+        onPlaybackStateChanged: expectedPlaying = (playbackState === MediaPlayer.PlayingState)
+        onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.EndOfMedia) {
+                if (repeatMode === 1) { mediaPlayer.position = 0; mediaPlayer.play(); }
+                else if (repeatMode === 0 && filteredTracks.count) {
+                    var newIndex = (currentIndex + 1) % filteredTracks.count;
+                    setCurrentTrack(filteredTracks.get(newIndex).path, newIndex);
+                }
+            }
+        }
+    }
+    Connections {
+        target: root
+        function onCurrentTrackPathChanged() {
+            albumArtImage.source = "";
+            if (currentTrackPath) {
+                for (var i = 0; i < tracks.count; i++) {
+                    if (tracks.get(i).path === currentTrackPath) {
+                        loadCoverForTrackIndex(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Process {
+        id: folderPicker
+        command: ["zenity", "--file-selection", "--directory", "--title=Select Music Folder"]
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var path = this.text.trim();
+                if (path) {
+                    libraryPath = path;
+                    if (homeReady) {
+                        scanProc.command = ["find", libraryPath, "-type", "f", "-name", "*.mp3"];
+                        scanProc.running = true;
+                    }
+                }
+            }
+        }
+    }
+    Process {
+        id: scanProc
+        running: false
+        property string buffer: ""
+        stdout: SplitParser { onRead: data => scanProc.buffer += data + "\n" }
+        onExited: {
+            isLoading = true;
+            var lines = scanProc.buffer.trim().split('\n');
+            tracks.clear();
+            for (var i = 0; i < lines.length; i++) {
+                var filePath = lines[i].trim();
+                if (!filePath) continue;
+                var parts = filePath.split('/');
+                var fileName = parts[parts.length - 1];
+                var trackName = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
+                tracks.append({
+                    name: trackName,
+                    artist: "Unknown Artist",
+                    album: "",
+                    path: "file://" + filePath,
+                    coverColor: stringToColor(trackName),
+                    coverPath: "",
+                    coverVersion: 0
+                });
+            }
+            pendingMetaCount = tracks.count;
+            if (tracks.count) {
+                rebuildFilteredTracks();
+                currentTrackPath = "";
+                currentIndex = -1;
+                mediaPlayer.source = "";
+                for (var idx = 0; idx < tracks.count; idx++) {
+                    enqueueTask("meta", idx);
+                }
+            } else {
+                isLoading = false;
+                rebuildFilteredTracks();
+            }
+            scanProc.buffer = "";
+            saveAllSettings();
+        }
+    }
+    Process {
+        id: metadataProc
+        running: false
+        property string buffer: ""
+        property var tag: ({})
+        stdout: SplitParser { onRead: data => metadataProc.buffer += data }
+        onExited: {
+            var idx = tag.index;
+            if (idx >= 0 && idx < tracks.count) {
+                try {
+                    var data = JSON.parse(metadataProc.buffer);
+                    if (data.format?.tags) {
+                        var tags = data.format.tags;
+                        var updatedTrack = {
+                            name: tags.title || tracks.get(idx).name,
+                            artist: tags.artist || tracks.get(idx).artist,
+                            album: tags.album || tracks.get(idx).album,
+                            path: tracks.get(idx).path,
+                            coverColor: tracks.get(idx).coverColor,
+                            coverPath: tracks.get(idx).coverPath,
+                            coverVersion: tracks.get(idx).coverVersion
+                        };
+                        tracks.set(idx, updatedTrack);
+                        updateFilteredItem(updatedTrack.path);
+                    }
+                } catch (e) { console.error("FFprobe parse error:", e); }
+                metadataProc.buffer = "";
+                enqueueTask("cover", idx);
+            }
+            pendingMetaCount--;
+            if (pendingMetaCount === 0) sortTracksByArtist();
+            processNextTask();
+        }
+    }
+    Process {
+        id: checkFileProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            var trackIdx = tag.trackIndex;
+            var trackPath = tag.path;
+            var cachePath = tag.cachePath;
+            if (exitCode === 0) {
+                var track = tracks.get(trackIdx);
+                track.coverPath = "file://" + cachePath;
+                track.coverVersion = (track.coverVersion || 0) + 1;
+                tracks.set(trackIdx, track);
+                updateFilteredItem(trackPath);
+                if (trackPath === currentTrackPath)
+                    albumArtImage.source = track.coverPath + "?v=" + track.coverVersion;
+                processNextTask();
+            } else {
+                var filePath = tracks.get(trackIdx).path.toString().replace("file://", "");
+                coverProc.command = [ "ffmpeg", "-i", filePath, "-an", "-c:v", "copy", "-frames:v", "1", "-y", cachePath ];
+                coverProc.tag = { trackIndex: trackIdx, path: trackPath, cachePath: cachePath };
+                coverProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: coverProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            var trackIdx = tag.trackIndex;
+            var trackPath = tag.path;
+            var cachePath = tag.cachePath;
+            if (exitCode === 0) {
+                var track = tracks.get(trackIdx);
+                track.coverPath = "file://" + cachePath;
+                track.coverVersion = (track.coverVersion || 0) + 1;
+                tracks.set(trackIdx, track);
+                updateFilteredItem(trackPath);
+                if (trackPath === currentTrackPath)
+                    albumArtImage.source = track.coverPath + "?v=" + track.coverVersion;
+            } else console.log("No cover for", tracks.get(trackIdx).name);
+            processNextTask();
+        }
+    }
+
+    function sortTracksByArtist() {
+        if (tracks.count === 0) return;
+        var currentPath = currentTrackPath;
+        var trackArray = [];
+        for (var i = 0; i < tracks.count; i++) {
+            var original = tracks.get(i);
+            trackArray.push({
+                name: original.name,
+                artist: original.artist,
+                album: original.album,
+                path: original.path,
+                coverColor: original.coverColor,
+                coverPath: original.coverPath,
+                coverVersion: original.coverVersion
+            });
+        }
+        trackArray.sort(function(a, b) {
+            var artistA = a.artist || "";
+            var artistB = b.artist || "";
+            var artistComp = artistA.localeCompare(artistB);
+            if (artistComp !== 0) return artistComp;
+            var nameA = a.name || "";
+            var nameB = b.name || "";
+            return nameA.localeCompare(nameB);
+        });
+        tracks.clear();
+        for (var j = 0; j < trackArray.length; j++) tracks.append(trackArray[j]);
+        if (currentPath) {
+            for (var k = 0; k < tracks.count; k++) {
+                if (tracks.get(k).path === currentPath) {
+                    currentIndex = k;
+                    break;
+                }
+            }
+        }
+        rebuildFilteredTracks();
+        trackListView.forceLayout();
+        if (currentPath && currentIndex !== -1) loadCoverForTrackIndex(currentIndex);
+    }
+
+    function stringToColor(str) {
+        var hash = 0;
+        for (var i = 0; i < str.length; i++) hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        return Qt.hsla(Math.abs(hash) % 360 / 360, 0.7, 0.6, 1.0);
+    }
+    function formatTime(ms) {
+        let seconds = Math.floor(ms / 1000);
+        return Math.floor(seconds / 60) + ":" + (seconds % 60).toString().padStart(2, '0');
+    }
+    Component.onCompleted: { initDatabase(); loadAllSettings(); }
+
+    function loadLyrics(trackPath) {
+        if (!trackPath) { lyricsContent = "there's no lyrics yet :3"; return; }
+        lyricsContent = "there's no lyrics yet :3";
+        var filePath = trackPath.toString().replace("file://", "");
+        lyricsMetaProc.command = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", filePath];
+        lyricsMetaProc.running = true;
+    }
+    Process {
+        id: lyricsMetaProc
+        running: false
+        property string buffer: ""
+        stdout: SplitParser { onRead: data => lyricsMetaProc.buffer += data }
+        onExited: {
+            var lyrics = "";
+            if (exitCode === 0) {
+                try {
+                    var data = JSON.parse(lyricsMetaProc.buffer);
+                    if (data.format?.tags) {
+                        var tags = data.format.tags;
+                        for (var key in tags) {
+                            if (key.toLowerCase() === "lyrics") { lyrics = tags[key]; break; }
+                        }
+                    }
+                } catch (e) { console.error("Failed to parse ffprobe output for lyrics"); }
+            }
+            lyricsMetaProc.buffer = "";
+            if (lyrics !== "") lyricsContent = lyrics;
+            else {
+                var basePath = filePath.replace(/.[^/.]+$/, "");
+                var lrcPath = basePath + ".lrc";
+                checkLrcProc.command = ["test", "-f", lrcPath];
+                checkLrcProc.tag = { lrcPath: lrcPath };
+                checkLrcProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: checkLrcProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode === 0) {
+                readLrcProc.command = ["cat", tag.lrcPath];
+                readLrcProc.running = true;
+            } else lyricsContent = "there's no lyrics yet :3";
+        }
+    }
+    Process {
+        id: readLrcProc
+        running: false
+        stdout: SplitParser { onRead: data => lyricsContent = data; }
+    }
+    function saveLyricsToFile(text) {
+        if (!currentTrackPath) return;
+        var audioPath = currentTrackPath.toString().replace("file://", "");
+        var tempRaw = "/tmp/kuteplayer_lyrics_raw_" + Qt.md5(audioPath) + ".txt";
+        var tempAudio = audioPath + ".tmp.mp3";
+        var writeCmd = ["sh", "-c", "cat > '" + tempRaw + "' << 'EOF'\n" + text + "\nEOF"];
+        writeRawProc.command = writeCmd;
+        writeRawProc.tag = { audioPath: audioPath, tempRaw: tempRaw, tempAudio: tempAudio };
+        writeRawProc.running = true;
+    }
+    Process {
+        id: writeRawProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode !== 0) { console.error("Failed to write lyrics temp file"); return; }
+            var cmd = [ "sh", "-c", "ffmpeg -i '" + tag.audioPath + "' -c copy -metadata lyrics=$(cat '" + tag.tempRaw + "') -y '" + tag.tempAudio + "'" ];
+            ffmpegLyricsProc.command = cmd;
+            ffmpegLyricsProc.tag = tag;
+            ffmpegLyricsProc.running = true;
+        }
+    }
+    Process {
+        id: ffmpegLyricsProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            rmTempRawProc.command = ["rm", "-f", tag.tempRaw];
+            rmTempRawProc.running = true;
+            if (exitCode === 0) {
+                var moveCmd = ["mv", tag.tempAudio, tag.audioPath];
+                moveLyricsProc.command = moveCmd;
+                moveLyricsProc.tag = { audioPath: tag.audioPath };
+                moveLyricsProc.running = true;
+            } else {
+                console.error("ffmpeg failed to inject lyrics");
+                rmTempAudioProc.command = ["rm", "-f", tag.tempAudio];
+                rmTempAudioProc.running = true;
+            }
+        }
+    }
+    Process {
+        id: moveLyricsProc
+        running: false
+        property var tag: ({})
+        onExited: {
+            if (exitCode === 0) {
+                console.log("Lyrics saved successfully");
+                lyricsContent = lyricsEditBuffer;
+                loadLyrics("file://" + tag.audioPath);
+            } else console.error("Failed to replace audio file");
+        }
+    }
+    Process { id: rmTempRawProc; running: false }
+    Process { id: rmTempAudioProc; running: false }
+
+    ColumnLayout {
+        anchors.fill: parent; anchors.margins: 8; spacing: 8
+        Item {
+            Layout.fillWidth: true; height: 32
+            Rectangle {
+                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                width: childrenRect.width + 42; height: 32; radius: 16
+                color: Appearance.colors.colLayer1
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; spacing: 4
+                    Button {
+                        id: editMetadataBtn
+                        implicitWidth: 28; implicitHeight: 28
+                        background: Rectangle {
+                            color: editMetadataBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (editMetadataBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : "transparent")
+                            radius: 14
+                        }
+                        contentItem: Item {
+                            anchors.fill: parent
+                            MaterialSymbol {
+                                anchors.centerIn: parent
+                                text: metadataEditing ? "save" : "edit"
+                                iconSize: 18
+                                color: editMetadataBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (editMetadataBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1)
+                            }
+                        }
+                        onClicked: { if (metadataEditing) saveMetadata(); else startMetadataEdit(); }
+                    }
+                    Button {
+                        id: lyricsBtn
+                        implicitWidth: 28; implicitHeight: 28
+                        background: Rectangle {
+                            color: lyricsBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (lyricsBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : "transparent")
+                            radius: 14
+                        }
+                        contentItem: Item {
+                            anchors.fill: parent
+                            MaterialSymbol {
+                                anchors.centerIn: parent; text: "article"; iconSize: 16
+                                color: lyricsBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (lyricsBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1)
+                            }
+                        }
+                        onClicked: { showLyrics = !showLyrics; if (!showLyrics) lyricsEditing = false; }
+                    }
+                }
+            }
+        }
+        Item {
+            Layout.alignment: Qt.AlignHCenter; width: 120; height: 120
+            Image {
+                id: albumArtImage
+                anchors.fill: parent; fillMode: Image.PreserveAspectCrop; source: ""; visible: status === Image.Ready
+                asynchronous: true; cache: true
+                layer.enabled: true
+                layer.effect: OpacityMask {
+                    maskSource: Rectangle { width: albumArtImage.width; height: albumArtImage.height; radius: 8 }
+                }
+            }
+            Rectangle {
+                anchors.fill: parent; radius: 8
+                color: (currentTrackPath && !albumArtImage.visible) ? (() => {
+                    for (var i = 0; i < tracks.count; i++) if (tracks.get(i).path === currentTrackPath) return tracks.get(i).coverColor;
+                    return Appearance.colors.colOnLayer1;
+                })() : Appearance.colors.colOnLayer1
+                visible: !albumArtImage.visible
+                MaterialSymbol {
+                    anchors.centerIn: parent; text: "music_note"; iconSize: 48
+                    color: Appearance.colors.colLayer0; visible: parent.visible
+                }
+            }
+            Rectangle {
+                anchors.fill: parent; radius: 8; color: "#80000000"
+                visible: metadataEditing; opacity: coverMouseArea.containsMouse ? 1.0 : 0.5
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+                MaterialSymbol { anchors.centerIn: parent; text: "edit"; iconSize: 32; color: "white" }
+            }
+            MouseArea {
+                id: coverMouseArea
+                anchors.fill: parent
+                cursorShape: metadataEditing ? Qt.PointingHandCursor : Qt.ArrowCursor
+                enabled: metadataEditing; hoverEnabled: metadataEditing
+                onClicked: changeCover()
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true; Layout.alignment: Qt.AlignHCenter
+            height: metadataEditing ? 50 : childrenRect.height + 12
+            radius: 8; color: Appearance.colors.colLayer1
+            Column {
+                anchors.centerIn: parent; spacing: metadataEditing ? 8 : 2
+                Loader {
+                    sourceComponent: metadataEditing ? editNameField : displayNameText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+                Component {
+                    id: displayNameText
+                    Text {
+                        text: currentTrackName; color: Appearance.colors.colOnLayer1; font.bold: true; font.pixelSize: 14
+                        horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight
+                    }
+                }
+                Component {
+                    id: editNameField
+                    RowLayout {
+                        spacing: 4
+                        MaterialSymbol { text: "edit"; iconSize: 14; color: Appearance.colors.colSubtext }
+                        TextField {
+                            text: editName; onTextChanged: editName = text
+                            color: Appearance.colors.colOnLayer1; font.bold: true; font.pixelSize: 14
+                            background: null; horizontalAlignment: Text.AlignHCenter
+                            leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                            height: font.pixelSize + 2
+                            Layout.preferredHeight: height; Layout.maximumHeight: height; Layout.minimumHeight: height
+                            width: Math.max(100, implicitWidth)
+                        }
+                    }
+                }
+                Loader {
+                    sourceComponent: metadataEditing ? editArtistAlbumField : displayArtistAlbumText
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+                Component {
+                    id: displayArtistAlbumText
+                    Text {
+                        text: currentTrackArtistAlbum; color: Appearance.colors.colSubtext; font.pixelSize: 12
+                        horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight
+                    }
+                }
+                Component {
+                    id: editArtistAlbumField
+                    RowLayout {
+                        spacing: 8
+                        MaterialSymbol { text: "edit"; iconSize: 12; color: Appearance.colors.colSubtext }
+                        TextField {
+                            text: editArtist; onTextChanged: editArtist = text
+                            color: Appearance.colors.colSubtext; font.pixelSize: 12
+                            background: null; leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                            height: font.pixelSize + 2
+                            Layout.preferredHeight: height; Layout.maximumHeight: height; Layout.minimumHeight: height
+                            width: Math.max(80, implicitWidth)
+                            placeholderText: "Artist"; placeholderTextColor: Appearance.colors.colSubtext
+                        }
+                        Text {
+                            text: "•"; color: Appearance.colors.colSubtext; font.pixelSize: 12
+                            visible: editAlbum !== "" || editArtist !== ""
+                            height: font.pixelSize + 2
+                            Layout.preferredHeight: height; Layout.maximumHeight: height; Layout.minimumHeight: height
+                        }
+                        TextField {
+                            text: editAlbum; onTextChanged: editAlbum = text
+                            color: Appearance.colors.colSubtext; font.pixelSize: 12
+                            background: null; leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                            height: font.pixelSize + 2
+                            Layout.preferredHeight: height; Layout.maximumHeight: height; Layout.minimumHeight: height
+                            width: Math.max(80, implicitWidth)
+                            placeholderText: "Album"; placeholderTextColor: Appearance.colors.colSubtext
+                        }
+                    }
+                }
+            }
+        }
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter; spacing: 12
+            Button {
+                id: prevBtn; implicitWidth: 38; implicitHeight: 38
+                background: Rectangle { color: prevBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (prevBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1); radius: 19 }
+                contentItem: Item {
+                    anchors.fill: parent
+                    MaterialSymbol { anchors.centerIn: parent; text: "skip_previous"; iconSize: 18; color: prevBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (prevBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1) }
+                }
+                onClicked: if (filteredTracks.count) {
+                    var newIndex = (currentIndex - 1 + filteredTracks.count) % filteredTracks.count;
+                    setCurrentTrack(filteredTracks.get(newIndex).path, newIndex);
+                }
+            }
+            Button {
+                id: playPauseBtn; implicitWidth: 44; implicitHeight: 44
+                background: Rectangle { color: playPauseBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (playPauseBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1); radius: 22 }
+                contentItem: Item {
+                    anchors.fill: parent
+                    MaterialSymbol {
+                        anchors.centerIn: parent
+                        text: expectedPlaying ? "pause" : "play_arrow"
+                        iconSize: 22
+                        color: playPauseBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (playPauseBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1)
+                    }
+                }
+                onClicked: expectedPlaying ? mediaPlayer.pause() : mediaPlayer.play()
+            }
+            Button {
+                id: nextBtn; implicitWidth: 38; implicitHeight: 38
+                background: Rectangle { color: nextBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (nextBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1); radius: 19 }
+                contentItem: Item {
+                    anchors.fill: parent
+                    MaterialSymbol { anchors.centerIn: parent; text: "skip_next"; iconSize: 18; color: nextBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (nextBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1) }
+                }
+                onClicked: if (filteredTracks.count) {
+                    var newIndex = (currentIndex + 1) % filteredTracks.count;
+                    setCurrentTrack(filteredTracks.get(newIndex).path, newIndex);
+                }
+            }
+            Button {
+                id: repeatBtn; implicitWidth: 38; implicitHeight: 38
+                background: Rectangle { color: repeatBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (repeatBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1); radius: 19 }
+                contentItem: Item {
+                    anchors.fill: parent
+                    MaterialSymbol { anchors.centerIn: parent; text: repeatMode === 1 ? "repeat_one" : "repeat"; iconSize: 18; color: repeatMode === 1 ? Appearance.colors.colAccent : (repeatBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1) }
+                }
+                onClicked: { repeatMode = repeatMode === 0 ? 1 : 0; saveAllSettings(); }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Text { text: formatTime(mediaPlayer.position); color: Appearance.colors.colSubtext; font.pixelSize: 10 }
+            Slider {
+                id: progressSlider; Layout.fillWidth: true; from: 0; to: 100; value: 0; enabled: mediaPlayer.seekable
+                onMoved: mediaPlayer.position = value * mediaPlayer.duration / 100
+                background: Rectangle {
+                    x: progressSlider.leftPadding; y: progressSlider.topPadding + progressSlider.availableHeight / 2 - height / 2
+                    width: progressSlider.availableWidth; height: 4; radius: 2; color: Appearance.colors.colLayer0
+                    Rectangle { width: progressSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: Appearance.colors.colOnLayer1 }
+                }
+                handle: Rectangle {
+                    x: progressSlider.leftPadding + progressSlider.visualPosition * (progressSlider.availableWidth - width)
+                    y: progressSlider.topPadding + progressSlider.availableHeight / 2 - height / 2
+                    width: 10; height: 10; radius: 5; color: progressSlider.enabled ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
+                }
+            }
+            Text { id: durationLabel; text: "0:00"; color: Appearance.colors.colSubtext; font.pixelSize: 10 }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            MaterialSymbol { text: "volume_up"; iconSize: 14; color: Appearance.colors.colOnLayer1 }
+            Slider {
+                id: volumeSlider; Layout.fillWidth: true; from: 0; to: 100; value: 80
+                onValueChanged: { mediaPlayer.audioOutput.volume = value / 100; debounceSaveTimer.restart(); }
+                background: Rectangle {
+                    x: volumeSlider.leftPadding; y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
+                    width: volumeSlider.availableWidth; height: 4; radius: 2; color: Appearance.colors.colLayer0
+                    Rectangle { width: volumeSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: Appearance.colors.colOnLayer1 }
+                }
+                handle: Rectangle {
+                    x: volumeSlider.leftPadding + volumeSlider.visualPosition * (volumeSlider.availableWidth - width)
+                    y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2
+                    width: 10; height: 10; radius: 5; color: Appearance.colors.colOnLayer1
+                }
+            }
+            Text { text: volumeSlider.value.toFixed(2) + "%"; color: Appearance.colors.colOnLayer1; font.pixelSize: 10; width: 45; horizontalAlignment: Text.AlignRight }
+        }
+        Rectangle {
+            id: lyricsPanel
+            Layout.fillWidth: true
+            Layout.preferredHeight: showLyrics ? 250 : 0
+            color: Appearance.colors.colLayer1; radius: 8; clip: true
+            Behavior on Layout.preferredHeight {
+                NumberAnimation { duration: 250; easing.type: Easing.OutQuad }
+            }
+            ColumnLayout {
+                anchors.fill: parent; anchors.margins: 8; spacing: 8
+                Item {
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                    Flickable {
+                        anchors.fill: parent
+                        contentHeight: lyricsTextView.contentHeight
+                        boundsBehavior: Flickable.StopAtBounds
+                        opacity: !lyricsEditing ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: 200 } }
+                        visible: opacity > 0
+                        Text {
+                            id: lyricsTextView
+                            width: parent.width
+                            text: lyricsContent
+                            color: Appearance.colors.colOnLayer1; font.pixelSize: 12; wrapMode: Text.WordWrap
+                        }
+                    }
+                    Flickable {
+                        anchors.fill: parent
+                        contentHeight: Math.max(lyricsEditArea.implicitHeight, height)
+                        boundsBehavior: Flickable.StopAtBounds
+                        opacity: lyricsEditing ? 1 : 0
+                        Behavior on opacity { NumberAnimation { duration: 200 } }
+                        visible: opacity > 0
+                        TextArea {
+                            id: lyricsEditArea
+                            width: parent.width
+                            height: Math.max(implicitHeight, parent.height)
+                            text: lyricsEditBuffer
+                            onTextChanged: lyricsEditBuffer = text
+                            color: Appearance.colors.colOnLayer1; font.pixelSize: 12; wrapMode: Text.WordWrap
+                            background: Rectangle { color: Appearance.colors.colLayer2; radius: 4 }
+                            selectByMouse: true; focus: true
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        Layout.alignment: Qt.AlignLeft; implicitWidth: 80; implicitHeight: 28
+                        text: lyricsEditing ? "Save" : "Edit"
+                        enabled: currentTrackPath !== ""
+                        background: Rectangle {
+                            color: parent.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (parent.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1)
+                            radius: 4
+                        }
+                        contentItem: Text {
+                            text: parent.text
+                            color: parent.enabled ? (parent.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (parent.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1)) : Qt.darker(Appearance.colors.colOnLayer1, 1.5)
+                            font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: {
+                            if (!currentTrackPath) return;
+                            if (lyricsEditing) { saveLyricsToFile(lyricsEditBuffer); lyricsEditing = false; }
+                            else { lyricsEditBuffer = lyricsContent; lyricsEditing = true; }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true; Layout.topMargin: 8; spacing: 6
+            Rectangle {
+                Layout.fillWidth: true; height: 24; color: Appearance.colors.colLayer1; radius: 4
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
+                    MaterialSymbol { text: "search"; iconSize: 12; color: Appearance.colors.colSubtext }
+                    TextField {
+                        id: searchField; Layout.fillWidth: true; background: null; color: Appearance.colors.colOnLayer1
+                        placeholderText: "Search tracks..."; placeholderTextColor: Appearance.colors.colSubtext; font.pixelSize: 10
+                        onTextChanged: {
+                            root.searchText = text
+                            filterUpdateTimer.restart()
+                        }
+                    }
+                }
+            }
+            Button {
+                id: selectBtn; text: "Select"; Layout.preferredWidth: 50; implicitHeight: 28
+                background: Rectangle { color: selectBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (selectBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : Appearance.colors.colLayer1); radius: 4 }
+                contentItem: Item {
+                    anchors.fill: parent
+                    Text { anchors.centerIn: parent; text: selectBtn.text; color: selectBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (selectBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1); font.pixelSize: 9 }
+                }
+                onClicked: folderPicker.running = true
+            }
+            Button {
+                id: editBtn; text: editMode ? "Done" : "Edit"; Layout.preferredWidth: 50; implicitHeight: 28
+                background: Rectangle {
+                    color: editBtn.down ? Qt.darker(Appearance.colors.colLayer1, 1.2) : (editBtn.hovered ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : (editMode ? Appearance.colors.colAccent : Appearance.colors.colLayer1))
+                    radius: 4
+                }
+                contentItem: Item {
+                    anchors.fill: parent
+                    Text { anchors.centerIn: parent; text: editBtn.text; color: editBtn.down ? Qt.darker(Appearance.colors.colOnLayer1, 1.2) : (editBtn.hovered ? Appearance.colors.colAccent : Appearance.colors.colOnLayer1); font.pixelSize: 9 }
+                }
+                onClicked: editMode = !editMode
+            }
+        }
+        ListView {
+            id: trackListView; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; cacheBuffer: 200
+            model: filteredTracks; interactive: true
+            delegate: Item {
+                width: ListView.view.width; height: 40
+                property bool isCurrent: currentTrackPath === model.path
+                Rectangle {
+                    anchors.fill: parent
+                    color: isCurrent ? Appearance.colors.colLayer2 : (mouseArea.containsMouse ? Qt.lighter(Appearance.colors.colLayer1, 1.2) : "transparent")
+                    radius: 4
+                }
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 8
+                    MaterialSymbol {
+                        text: "drag_handle"; iconSize: 16; color: Appearance.colors.colSubtext
+                        Layout.preferredWidth: root.editMode ? 16 : 0
+                        opacity: root.editMode ? 1 : 0
+                        Behavior on Layout.preferredWidth { NumberAnimation { duration: 200; easing.type: Easing.OutQuart } }
+                        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutQuart } }
+                    }
+                    Item {
+                        width: 32; height: 32
+                        Image {
+                            id: thumbImage; anchors.fill: parent; fillMode: Image.PreserveAspectCrop
+                            source: model.coverPath ? model.coverPath + "?v=" + (model.coverVersion || 0) : ""
+                            visible: status === Image.Ready
+                            asynchronous: true; cache: true
+                            layer.enabled: true
+                            layer.effect: OpacityMask {
+                                maskSource: Rectangle { width: thumbImage.width; height: thumbImage.height; radius: 4 }
+                            }
+                        }
+                        Rectangle {
+                            anchors.fill: parent; radius: 4; color: model.coverColor; visible: !thumbImage.visible
+                            MaterialSymbol { anchors.centerIn: parent; text: "music_note"; iconSize: 16; color: Appearance.colors.colLayer0; visible: parent.visible }
+                        }
+                    }
+                    Column {
+                        Layout.fillWidth: true
+                        Text {
+                            width: parent.width; text: model.name || "Unknown"
+                            color: Appearance.colors.colOnLayer1; font.pixelSize: 11; elide: Text.ElideRight
+                        }
+                        Text {
+                            width: parent.width; text: model.artist + (model.album ? " • " + model.album : "")
+                            color: Appearance.colors.colSubtext; font.pixelSize: 9; elide: Text.ElideRight
+                        }
+                    }
+                }
+                MouseArea {
+                    id: mouseArea; anchors.fill: parent; enabled: true; hoverEnabled: true
+                    onClicked: setCurrentTrack(model.path, index)
+                }
+            }
+            ScrollBar.vertical: ScrollBar {}
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Text { text: tracks.count + " tracks"; color: Appearance.colors.colSubtext; font.pixelSize: 9 }
+            Item { Layout.fillWidth: true }
+            Text { text: libraryPath ? libraryPath.split('/').pop() : "No library"; color: Appearance.colors.colSubtext; font.pixelSize: 9; elide: Text.ElideRight }
+        }
+    }
+}
