@@ -1,0 +1,17 @@
+{
+  "playPause": "Space",
+  "prevTrack": "ArrowUp",
+  "nextTrack": "ArrowDown",
+  "volumeUp": "ArrowRight",
+  "volumeDown": "ArrowLeft",
+  "seekBackward": "Ctrl+ArrowLeft",
+  "seekForward": "Ctrl+Control",
+  "editMetadata": "Ctrl+x",
+  "save": "Ctrl+S",
+  "showLyrics": "Ctrl+D",
+  "openShortcuts": "Ctrl+/",
+  "openSettings": "Ctrl+E",
+  "selectLibrary": "Ctrl+O",
+  "toggleLibrary": "Ctrl+Z",
+  "editPlaylistOrder": "Ctrl+Shift+E"
+}
