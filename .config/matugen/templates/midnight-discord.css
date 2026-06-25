@@ -128,18 +128,6 @@ li[class^=channel_]:has(a[href="/channels/@me"]) {
     border-radius: var(--radius-lg);
 }
 
-[class*="chipletContainerInner__10651"] {
-    background-color: var(--bg-2) !important;
-    color: var(--text-3) !important;
-    border-radius: var(--roundness-xs);
-    padding: 0 4px;
-}
-
-[class*="clanTagChiplet"]:hover {
-    background-color: var(--hover) !important;
-    color: var(--text-1) !important;
-}
-
 /*padding between call and chat*/
 [class*="content_f75fb0"] {
     padding-top: 10px;
@@ -190,3 +178,27 @@ li[class^=channel_]:has(a[href="/channels/@me"]) {
 [class*="attachedCaret_f1ceac"][class*="greenGlow_f1ceac"] [class*="contextMenuCaret_f1ceac"] path {
     fill: var(--bg-1) !important;
 }
+
+/*messages hover animation*/
+.message__5126c.cozyMessage__5126c,
+.wrapper_c19a55.cozy_c19a55 {
+    transition: background-color 0.2s ease !important;
+}
+/*guilds tags*/
+[class*="chipletContainerInner__10651"] {
+    background-color: var(--bg-2) !important;
+    color: var(--text-0) !important;
+    border-radius: 20px !important;
+    padding: 4px 6px !important;
+    font-weight: 500;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transition: all 0.2s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+}
+
+[class*="clanTagChiplet"]:hover {
+    background-color: var(--bg-3) !important;
+    color: var(--text-0) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
