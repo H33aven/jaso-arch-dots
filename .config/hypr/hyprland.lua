@@ -1,0 +1,6 @@
+require("modules.colors")
+require("modules.monitors")
+require("modules.execs")
+require("modules.general")
+require("modules.binds")
+require("modules.rules")
