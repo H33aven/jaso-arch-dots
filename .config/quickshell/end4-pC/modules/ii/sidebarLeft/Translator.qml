@@ -2,35 +2,23 @@ import qs.services
 import qs.modules.common
 import qs.modules.common.widgets
 import qs.modules.common.functions
-import qs.modules.ii.sidebarLeft.translator
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 
-/**
- * Translator widget with the `trans` commandline tool.
- */
 Item {
     id: root
 
-    // Sizes
     property real padding: 4
 
-    // Widgets
     property var inputField: inputCanvas.inputTextArea
-
-    // Widget variables
-    property bool translationFor: false
     property string translatedText: ""
     property list<string> languages: []
 
-    // Options
     property string targetLanguage: Config.options.language.translator.targetLanguage
     property string sourceLanguage: Config.options.language.translator.sourceLanguage
-    property string hostLanguage: targetLanguage
 
-    // States
     property bool showLanguageSelector: false
     property bool languageSelectorTarget: false
 
@@ -40,12 +28,13 @@ Item {
     }
 
     function swapLanguages() {
-        let temp = root.targetLanguage;
-        root.targetLanguage = root.sourceLanguage;
-        root.sourceLanguage = temp;
-        Config.options.language.translator.targetLanguage = root.targetLanguage;
+        let temp = root.sourceLanguage;
+        root.sourceLanguage = root.targetLanguage;
+        root.targetLanguage = temp;
         Config.options.language.translator.sourceLanguage = root.sourceLanguage;
+        Config.options.language.translator.targetLanguage = root.targetLanguage;
         translateTimer.restart();
+        root.inputField.forceActiveFocus();
     }
 
     onFocusChanged: (focus) => {
@@ -111,26 +100,58 @@ Item {
             fill: parent
             margins: root.padding
         }
-        spacing: 10
+        spacing: 6
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            LanguageSelectorButton {
+                id: sourceButton
+                Layout.fillWidth: true
+                displayText: root.sourceLanguage
+                onClicked: root.showLanguageSelectorDialog(false)
+            }
+
+            GroupButton {
+                id: swapButton
+                implicitWidth: height
+                colBackground: Appearance.colors.colTertiaryContainer
+                buttonRadius: Appearance.rounding.full
+                contentItem: MaterialSymbol {
+                    anchors.centerIn: parent
+                    text: "autorenew"
+                    iconSize: 20
+                    color: Appearance.colors.colOnLayer1
+                }
+                onClicked: root.swapLanguages()
+            }
+
+            LanguageSelectorButton {
+                id: targetButton
+                Layout.fillWidth: true
+                displayText: root.targetLanguage
+                onClicked: root.showLanguageSelectorDialog(true)
+            }
+        }
 
         TextCanvas {
             id: inputCanvas
-            Layout.fillWidth: true
             isInput: true
-            containerColor: ColorUtils.transparentize(Appearance.colors.colSecondaryContainer, 0.8)
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 100
             placeholderText: Translation.tr("Enter text to translate...")
-            onInputTextChanged: {
-                translateTimer.restart();
-            }
+            onInputTextChanged: translateTimer.restart()
+
             GroupButton {
                 id: pasteButton
                 baseWidth: height
                 buttonRadius: Appearance.rounding.small
                 contentItem: MaterialSymbol {
                     anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
-                    iconSize: Appearance.font.pixelSize.larger
                     text: "content_paste"
+                    iconSize: Appearance.font.pixelSize.larger
                     color: deleteButton.enabled ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
                 }
                 onClicked: {
@@ -144,9 +165,8 @@ Item {
                 enabled: inputCanvas.inputTextArea.text.length > 0
                 contentItem: MaterialSymbol {
                     anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
-                    iconSize: Appearance.font.pixelSize.larger
                     text: "close"
+                    iconSize: Appearance.font.pixelSize.larger
                     color: deleteButton.enabled ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
                 }
                 onClicked: {
@@ -155,53 +175,15 @@ Item {
             }
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 20
-
-            Item { Layout.fillWidth: true }
-
-            LanguageSelectorButton {
-                id: sourceLanguageButton
-                displayText: root.sourceLanguage
-                buttonColor: Appearance.colors.colSecondaryContainer
-                onClicked: root.showLanguageSelectorDialog(false)
-            }
-
-            GroupButton {
-                id: swapButton
-                Layout.preferredWidth: height
-                colBackground: Appearance.colors.colTertiaryContainer
-                colBackgroundHover: Appearance.colors.colTertiaryContainerHover
-                buttonRadius: Appearance.rounding.full
-                contentItem: MaterialSymbol {
-                    anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
-                    iconSize: Appearance.font.pixelSize.larger
-                    text: "autorenew"
-                    color: Appearance.colors.colOnLayer1
-                }
-                onClicked: root.swapLanguages()
-            }
-
-            LanguageSelectorButton {
-                id: targetLanguageButton
-                displayText: root.targetLanguage
-                buttonColor: Appearance.colors.colPrimaryContainer
-                onClicked: root.showLanguageSelectorDialog(true)
-            }
-
-            Item { Layout.fillWidth: true }
-        }
-
         TextCanvas {
             id: outputCanvas
-            Layout.fillWidth: true
             isInput: false
-            containerColor: ColorUtils.transparentize(Appearance.colors.colPrimaryContainer, 0.8)
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 100
             placeholderText: Translation.tr("Translation goes here...")
-            property bool hasTranslation: (root.translatedText.trim().length > 0)
-            text: hasTranslation ? root.translatedText : ""
+            text: root.translatedText
+
             GroupButton {
                 id: copyButton
                 baseWidth: height
@@ -209,9 +191,8 @@ Item {
                 enabled: outputCanvas.displayedText.trim().length > 0
                 contentItem: MaterialSymbol {
                     anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
-                    iconSize: Appearance.font.pixelSize.larger
                     text: "content_copy"
+                    iconSize: Appearance.font.pixelSize.larger
                     color: copyButton.enabled ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
                 }
                 onClicked: {
@@ -225,9 +206,8 @@ Item {
                 enabled: outputCanvas.displayedText.trim().length > 0
                 contentItem: MaterialSymbol {
                     anchors.centerIn: parent
-                    horizontalAlignment: Text.AlignHCenter
-                    iconSize: Appearance.font.pixelSize.larger
                     text: "travel_explore"
+                    iconSize: Appearance.font.pixelSize.larger
                     color: searchButton.enabled ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
                 }
                 onClicked: {
@@ -237,6 +217,20 @@ Item {
                     }
                     Qt.openUrlExternally(url);
                 }
+            }
+        }
+
+        Text {
+            id: hintText
+            Layout.fillWidth: true
+            Layout.topMargin: 2
+            horizontalAlignment: Text.AlignHCenter
+            color: Appearance.colors.colSubtext
+            font.pixelSize: Appearance.font.pixelSize.smallest
+            text: Translation.tr("Alt+Tab to swap languages")
+            opacity: (root.inputField.text.length > 0 || root.translatedText.length > 0) ? 1.0 : 0.0
+            Behavior on opacity {
+                NumberAnimation { duration: 400; easing.type: Easing.InOutQuad }
             }
         }
     }
@@ -266,6 +260,126 @@ Item {
                 }
                 translateTimer.restart();
             }
+        }
+    }
+
+    component TextCanvas: Rectangle {
+        id: textCanvasRoot
+        property bool isInput: true
+        property string placeholderText
+        property string text: ""
+        property var inputTextArea: isInput ? inputLoader.item : undefined
+        readonly property string displayedText: isInput ? (inputLoader.item ? inputLoader.item.text : "") :
+            (text.length > 0 ? outputLoader.item.text : "")
+        default property alias actionButtons: actions.data
+        Layout.fillWidth: true
+        implicitHeight: Math.max(150, inputColumn.implicitHeight)
+        color: Appearance.colors.colLayer2
+        radius: Appearance.rounding.normal
+
+        signal inputTextChanged()
+
+        ColumnLayout {
+            id: inputColumn
+            anchors.fill: parent
+            spacing: 0
+
+            Loader {
+                id: inputLoader
+                active: textCanvasRoot.isInput
+                visible: textCanvasRoot.isInput
+                Layout.fillWidth: true
+                sourceComponent: StyledTextArea {
+                    id: inputTextArea
+                    placeholderText: textCanvasRoot.placeholderText
+                    wrapMode: TextEdit.Wrap
+                    textFormat: TextEdit.PlainText
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: Appearance.colors.colOnLayer1
+                    padding: 15
+                    background: null
+                    onTextChanged: textCanvasRoot.inputTextChanged()
+                }
+            }
+
+            Loader {
+                id: outputLoader
+                active: !textCanvasRoot.isInput
+                visible: !textCanvasRoot.isInput
+                Layout.fillWidth: true
+                sourceComponent: StyledText {
+                    id: outputTextArea
+                    padding: 15
+                    wrapMode: Text.Wrap
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    color: textCanvasRoot.text.length > 0 ? Appearance.colors.colOnLayer1 : Appearance.colors.colSubtext
+                    text: textCanvasRoot.text.length > 0 ? textCanvasRoot.text : textCanvasRoot.placeholderText
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.margins: 10
+                spacing: 10
+
+                Loader {
+                    active: textCanvasRoot.isInput
+                    visible: textCanvasRoot.isInput
+                    Layout.leftMargin: 10
+                    sourceComponent: Text {
+                        text: Translation.tr("%1 characters").arg(inputLoader.item ? inputLoader.item.text.length : 0)
+                        color: Appearance.colors.colOnLayer1
+                        font.pixelSize: Appearance.font.pixelSize.smaller
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                ButtonGroup {
+                    id: actions
+                }
+            }
+        }
+    }
+
+    component LanguageSelectorButton: RippleButton {
+        id: langButton
+        property string displayText: ""
+        colBackground: Appearance.colors.colLayer2
+
+        implicitWidth: contentItem.implicitWidth + horizontalPadding * 2
+        implicitHeight: contentItem.implicitHeight + verticalPadding * 2
+
+        contentItem: Item {
+            anchors.centerIn: parent
+            implicitWidth: languageRow.implicitWidth
+            implicitHeight: languageText.implicitHeight
+            RowLayout {
+                id: languageRow
+                anchors.centerIn: parent
+                spacing: 0
+                StyledText {
+                    id: languageText
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.leftMargin: 5
+                    text: langButton.displayText
+                    color: Appearance.colors.colOnLayer2
+                    font.pixelSize: Appearance.font.pixelSize.small
+                }
+                MaterialSymbol {
+                    Layout.alignment: Qt.AlignVCenter
+                    iconSize: Appearance.font.pixelSize.hugeass
+                    text: "arrow_drop_down"
+                    color: Appearance.colors.colOnLayer2
+                }
+            }
+        }
+    }
+
+    Shortcut {
+        sequence: "Alt+Tab"
+        onActivated: {
+            swapLanguages();
         }
     }
 }

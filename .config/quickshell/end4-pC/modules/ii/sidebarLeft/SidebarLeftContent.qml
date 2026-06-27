@@ -14,9 +14,9 @@ Item {
     anchors.fill: parent
     property bool aiChatEnabled: Config.options.policies.ai !== 0
     property bool translatorEnabled: Config.options.sidebar.translator.enable
+    property bool mediaEnabled: Config.options.sidebar.media.enable
     property bool animeEnabled: Config.options.policies.weeb !== 0
     property bool animeCloset: Config.options.policies.weeb === 2
-    property bool mediaEnabled: Config.options.sidebar.media.enable
     property var tabButtonList: [
         ...(root.aiChatEnabled ? [{"icon": "neurology", "name": Translation.tr("Intelligence")}] : []),
         ...(root.translatorEnabled ? [{"icon": "translate", "name": Translation.tr("Translator")}] : []),
@@ -47,15 +47,19 @@ Item {
             fill: parent
             margins: sidebarPadding
         }
-        spacing: verticalTabBar.expanded ? -2 : 0
+        spacing: sidebarPadding
 
-        VerticalTabBar {
-            id: verticalTabBar
+        Toolbar {
             visible: tabButtonList.length > 0
-            Layout.fillWidth: true
-            tabButtonList: root.tabButtonList
-            currentIndex: swipeView.currentIndex
-            onCurrentIndexChanged: swipeView.currentIndex = currentIndex
+            Layout.alignment: Qt.AlignHCenter
+            enableShadow: false
+            ToolbarTabBar {
+                id: tabBar
+                Layout.alignment: Qt.AlignHCenter
+                tabButtonList: root.tabButtonList
+                currentIndex: swipeView.currentIndex
+                onCurrentIndexChanged: swipeView.currentIndex = currentIndex
+            }
         }
 
         Rectangle {
@@ -63,13 +67,10 @@ Item {
             Layout.fillHeight: true
             implicitWidth: swipeView.implicitWidth
             implicitHeight: swipeView.implicitHeight
-            topLeftRadius: 0
-            bottomLeftRadius: Appearance.rounding.normal
-            topRightRadius: 0
-            bottomRightRadius: Appearance.rounding.normal
+            radius: Appearance.rounding.normal
             color: Appearance.colors.colLayer1
 
-            SwipeView { // Content pages
+            SwipeView {
                 id: swipeView
                 anchors.fill: parent
                 spacing: 10
