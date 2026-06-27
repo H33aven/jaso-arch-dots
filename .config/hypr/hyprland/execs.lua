@@ -2,7 +2,6 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("$HOME/.config/hypr/hyprland/scripts/start_geoclue_agent.sh")
     --hl.exec_cmd("qs -p ~/.config/quickshell/ii")
     hl.exec_cmd("qs -c end4-pC")
-    hl.exec_cmd("$HOME/.config/hypr/custom/scripts/__restore_video_wallpaper.sh")
 
     hl.exec_cmd("gnome-keyring-daemon --start --components=secrets")
     hl.exec_cmd("hypridle")

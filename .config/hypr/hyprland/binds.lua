@@ -1,5 +1,5 @@
 -- modules/binds.lua
-require("modules.lib")
+require("hyprland.lib")
 
 local mod = "SUPER"
 local modShift = mod .. " + SHIFT"
