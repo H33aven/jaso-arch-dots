@@ -32,4 +32,4 @@ if status is-interactive
     alias q 'qs -c ii'
 end
 
-neofetch
+fastfetch
